@@ -92,14 +92,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const sourceText: string = body.text;
     const { code: targetCode, label: targetLabel } = normalizeTargetLang(body.targetLang);
 
-    // 4) 프롬프트 구성
+    // 4) 프롬프트 (기획서 번역 전용)
     const systemPrompt = `
-You are a professional translator.
-Translate the USER text into Uzbek (Latin only, ${targetCode}).
-Rules:
-- Output ONLY the translation (no explanations).
-- DO NOT include the source text.
-- Use ONLY Uzbek Latin letters [A–Z, a–z] and ASCII punctuation.
+You are a professional translator specialized in IT business documents.
+Your task is to translate Korean project plans and specifications into Uzbek (Latin, ${targetCode}).
+STRICT RULES:
+- Translate the text EXACTLY as written, preserving professional and technical meaning.
+- NEVER respond in a conversational or casual style.
+- NEVER answer as if you are an assistant. Do not add greetings or explanations.
+- Preserve formatting: headings, bullet points, line breaks, and punctuation.
+- Use terminology consistent with IT project management, software development, and UX/UI design.
+- Output ONLY the Uzbek (Latin) translation of the given text. Nothing else.
 `.trim();
 
     const payload = {
