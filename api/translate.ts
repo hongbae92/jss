@@ -15,7 +15,7 @@ function unifyApostrophe(s: string) {
   return s?.replace(/[\u2018\u2019\u02BC\u02BB]/g, "'");
 }
 
-/** 키릴 → 라틴 (혹시 내려오는 경우 대비) */
+/** 키릴 → 라틴 */
 function cyrToLatin(input: string) {
   if (!input) return input;
   let s = input;
@@ -43,6 +43,61 @@ function normalizeTargetLang(input?: string) {
   return { code: "uz-Latn", label: "Uzbek (Latin)" };
 }
 
+/** 한글 포함 여부 */
+function hasHangul(s: string) {
+  return /[\u3131-\uD7A3]/.test(s);
+}
+
+/** 사과/거절 감지 */
+function looksLikeApologyOrRefusal(s: string) {
+  const t = s.trim().toLowerCase();
+  return /^(kechirasiz|uzr|sorry|i cannot|men bajara olmayman|impossible)/.test(t);
+}
+
+/** 실제 번역 요청 */
+async function requestTranslation(apiKey: string, model: string, sourceText: string, targetCode: string, strict: boolean) {
+  const systemPrompt = strict
+    ? `
+You are a professional translator.
+Translate the following Korean text into Uzbek (Latin, ${targetCode}).
+
+STRICT RULES:
+- ALWAYS translate literally and directly.
+- NEVER echo Korean text. Hangul MUST NOT appear.
+- NEVER refuse, NEVER apologize.
+- Preserve line breaks, punctuation, and symbols (~~ etc).
+- Output ONLY the Uzbek Latin translation.
+`.trim()
+    : `
+You are a translator.
+Translate Korean into Uzbek (Latin, ${targetCode}).
+Output only the translation.
+`.trim();
+
+  const payload = {
+    model,
+    temperature: 0,
+    messages: [
+      { role: "system", content: systemPrompt },
+      { role: "user", content: sourceText },
+    ],
+  };
+
+  const resp = await fetch(OPENAI_API_URL, {
+    method: "POST",
+    headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  });
+
+  if (!resp.ok) {
+    const errText = await resp.text().catch(() => "");
+    throw new Error(`OpenAI error ${resp.status}: ${errText}`);
+  }
+
+  const data = await resp.json();
+  return String(data?.choices?.[0]?.message?.content ?? "");
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCors(res);
   res.setHeader("Content-Type", "application/json; charset=utf-8");
@@ -62,7 +117,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    // OpenAI API 키 확인
+    // OpenAI API 키
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
 
@@ -75,39 +130,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const sourceText: string = body.text;
     const { code: targetCode } = normalizeTargetLang(body.targetLang);
 
-    // ✍ 단순/강력 프롬프트
-    const systemPrompt = `
-You are a professional translator.
-Translate the following Korean text into Uzbek (Latin, ${targetCode}).
-Output ONLY the Uzbek Latin translation. Nothing else.
-`.trim();
+    // 1차 요청
+    let result = await requestTranslation(apiKey, body.model || DEFAULT_MODEL, sourceText, targetCode, true);
+    let result_latin = unifyApostrophe(cyrToLatin(result)).trim();
 
-    const payload = {
-      model: body.model || DEFAULT_MODEL,
-      temperature: 0,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: sourceText },
-      ],
-    };
-
-    // 요청
-    const resp = await fetch(OPENAI_API_URL, {
-      method: "POST",
-      headers: { "Authorization": `Bearer ${apiKey}`, "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-
-    if (!resp.ok) {
-      const errText = await resp.text().catch(() => "");
-      return res.status(resp.status).json({ error: "OpenAI error", detail: errText });
+    // 한글/사과문 검출 시 재시도
+    if (hasHangul(result_latin) || looksLikeApologyOrRefusal(result_latin)) {
+      const retry = await requestTranslation(apiKey, body.model || DEFAULT_MODEL, sourceText, targetCode, true);
+      result_latin = unifyApostrophe(cyrToLatin(retry)).trim();
     }
 
-    const data = await resp.json();
-    let translatedRaw: string = data?.choices?.[0]?.message?.content ?? "";
-    let result_latin = unifyApostrophe(cyrToLatin(translatedRaw)).trim();
-
-    // 최종 Base64만 응답 (깨짐 방지)
     const result_b64 = toBase64Utf8(result_latin);
 
     return res.status(200).json({
