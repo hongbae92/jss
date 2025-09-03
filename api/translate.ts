@@ -49,6 +49,11 @@ function looksLikeApologyOrRefusal(s: string) {
   return /^(kechirasiz|uzr|sorry|i cannot|men bajara olmayman|impossible)/.test(t);
 }
 
+/** 한글 포함 여부 */
+function hasHangul(s: string) {
+  return /[\u3131-\uD7A3]/.test(s);
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   setCors(res);
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
@@ -84,14 +89,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     // 번역 전용 프롬프트
     const systemPrompt = `
 You are a professional translator.
-Your ONLY task is to translate Korean text into Uzbek (Latin, ${targetCode}).
+Translate ALL Korean text into Uzbek (Latin, ${targetCode}).
 
 STRICT RULES:
-- ALWAYS translate the given text literally and faithfully.
-- NEVER refuse, NEVER apologize, NEVER improvise or fabricate.
-- NEVER change the meaning, NEVER reframe into another context (e.g., project plan).
-- Preserve original structure: line breaks, bullet points, punctuation, and symbols (~~ etc).
-- Output ONLY the Uzbek Latin translation, nothing else.
+- ALWAYS translate literally and faithfully.
+- NEVER refuse, NEVER apologize.
+- NEVER echo the source text.
+- Korean (Hangul) characters MUST NEVER appear in the output.
+- Output ONLY the Uzbek Latin translation, preserving line breaks, bullets, punctuation, and symbols.
 `.trim();
 
     const payload = {
@@ -119,16 +124,16 @@ STRICT RULES:
     let translatedRaw: string = data?.choices?.[0]?.message?.content ?? '';
     let result_latin = unifyApostrophe(cyrToLatin(translatedRaw)).trim();
 
-    // 사과/거절 감지 → 재시도
-    if (looksLikeApologyOrRefusal(result_latin)) {
+    // 사과/거절문 or 한글 포함 시 → 재시도
+    if (looksLikeApologyOrRefusal(result_latin) || hasHangul(result_latin)) {
       const retryPayload = {
         model: body.model || DEFAULT_MODEL,
         temperature: 0,
         messages: [
           { role: 'system', content: `
 Translate into Uzbek (Latin, ${targetCode}).
-You MUST always translate literally. Do not refuse, do not apologize.
-Output ONLY the Uzbek Latin translation.
+Do not echo Korean. Hangul is forbidden.
+Never refuse or apologize. Always output translation only.
 `.trim() },
           { role: 'user', content: sourceText }
         ],
