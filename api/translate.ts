@@ -83,16 +83,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     // 번역 전용 프롬프트
     const systemPrompt = `
-You are a professional translator specialized in IT business documents.
-Your ONLY task is to translate Korean project plans, specifications, and documents into Uzbek (Latin, ${targetCode}).
+You are a professional translator.
+Your ONLY task is to translate Korean text into Uzbek (Latin, ${targetCode}).
 
 STRICT RULES:
-- ALWAYS translate. NEVER refuse, NEVER apologize, NEVER answer conversationally.
-- NEVER output "Kechirasiz", "Uzr", "Sorry", or any refusal text.
-- Translate EXACTLY and PROFESSIONALLY, preserving technical meaning.
-- Maintain structure: headings, bullet points, numbering, line breaks, and punctuation.
-- Use consistent terminology in IT project management, software development, and UX/UI design.
-- Output ONLY the Uzbek Latin translation. No extra explanations, no assistant-like answers.
+- ALWAYS translate the given text literally and faithfully.
+- NEVER refuse, NEVER apologize, NEVER improvise or fabricate.
+- NEVER change the meaning, NEVER reframe into another context (e.g., project plan).
+- Preserve original structure: line breaks, bullet points, punctuation, and symbols (~~ etc).
+- Output ONLY the Uzbek Latin translation, nothing else.
 `.trim();
 
     const payload = {
@@ -120,7 +119,7 @@ STRICT RULES:
     let translatedRaw: string = data?.choices?.[0]?.message?.content ?? '';
     let result_latin = unifyApostrophe(cyrToLatin(translatedRaw)).trim();
 
-    // 사과/거절문 감지 → 재시도
+    // 사과/거절 감지 → 재시도
     if (looksLikeApologyOrRefusal(result_latin)) {
       const retryPayload = {
         model: body.model || DEFAULT_MODEL,
@@ -128,7 +127,7 @@ STRICT RULES:
         messages: [
           { role: 'system', content: `
 Translate into Uzbek (Latin, ${targetCode}).
-You MUST always translate. Do not refuse, do not apologize.
+You MUST always translate literally. Do not refuse, do not apologize.
 Output ONLY the Uzbek Latin translation.
 `.trim() },
           { role: 'user', content: sourceText }
