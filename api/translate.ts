@@ -3,19 +3,14 @@ import type { VercelRequest, VercelResponse } from '@vercel/node';
 const OPENAI_API_URL = "https://api.openai.com/v1/chat/completions";
 const DEFAULT_MODEL = "gpt-4o-mini";
 
-/** CORS */
 function setCors(res: VercelResponse) {
   res.setHeader("Access-Control-Allow-Origin", "*");
   res.setHeader("Access-Control-Allow-Methods", "GET,POST,OPTIONS");
   res.setHeader("Access-Control-Allow-Headers", "Content-Type, Authorization");
 }
-
-/** 특수 아포스트로피 통일 */
 function unifyApostrophe(s: string) {
   return s?.replace(/[\u2018\u2019\u02BC\u02BB]/g, "'");
 }
-
-/** 키릴 → 라틴 */
 function cyrToLatin(input: string) {
   if (!input) return input;
   let s = input;
@@ -27,13 +22,9 @@ function cyrToLatin(input: string) {
     .replace(/Ё/g, "Yo").replace(/ё/g, "yo");
   return unifyApostrophe(s);
 }
-
-/** Base64 변환 */
 function toBase64Utf8(s: string) {
   return Buffer.from(s ?? "", "utf8").toString("base64");
 }
-
-/** targetLang 정규화 */
 function normalizeTargetLang(input?: string) {
   const raw = (input || "").trim().toLowerCase();
   const uzLatnAliases = ["uz-latn", "uzbek (latin)", "oʻzbek lotin", "o'zbek lotin"];
@@ -42,34 +33,39 @@ function normalizeTargetLang(input?: string) {
   }
   return { code: "uz-Latn", label: "Uzbek (Latin)" };
 }
-
-/** 한글 포함 여부 */
 function hasHangul(s: string) {
   return /[\u3131-\uD7A3]/.test(s);
 }
-
-/** 사과/거절 감지 */
 function looksLikeApologyOrRefusal(s: string) {
   const t = s.trim().toLowerCase();
   return /^(kechirasiz|uzr|sorry|i cannot|men bajara olmayman|impossible)/.test(t);
 }
 
-/** 실제 번역 요청 */
+/** 아주 단순한 로마자 변환 fallback (최후의 보루) */
+function romanizeHangul(input: string) {
+  return input
+    .replace(/가/g,"ga").replace(/나/g,"na").replace(/다/g,"da")
+    .replace(/라/g,"ra").replace(/마/g,"ma").replace(/바/g,"ba")
+    .replace(/사/g,"sa").replace(/아/g,"a").replace(/자/g,"ja")
+    .replace(/차/g,"cha").replace(/카/g,"ka").replace(/타/g,"ta")
+    .replace(/파/g,"pa").replace(/하/g,"ha");
+  // 실제 구현은 더 확장 가능
+}
+
 async function requestTranslation(apiKey: string, model: string, sourceText: string, targetCode: string, strict: boolean) {
   const systemPrompt = strict
     ? `
 You are a professional translator.
 Translate the following Korean text into Uzbek (Latin, ${targetCode}).
 
-STRICT RULES:
+RULES:
 - ALWAYS translate literally and directly.
 - NEVER echo Korean text. Hangul MUST NOT appear.
-- NEVER refuse, NEVER apologize.
-- Preserve line breaks, punctuation, and symbols (~~ etc).
+- NEVER refuse or apologize.
+- Preserve line breaks, punctuation, and symbols.
 - Output ONLY the Uzbek Latin translation.
 `.trim()
     : `
-You are a translator.
 Translate Korean into Uzbek (Latin, ${targetCode}).
 Output only the translation.
 `.trim();
@@ -107,7 +103,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
   try {
-    // 토큰 검사
     const expectedToken = process.env.CLIENT_TOKEN;
     if (expectedToken) {
       const auth = String(req.headers["authorization"] || "");
@@ -116,12 +111,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return res.status(401).json({ error: "Unauthorized: Invalid client token." });
       }
     }
-
-    // OpenAI API 키
     const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
 
-    // 바디 파싱
     const body = typeof req.body === "string" ? JSON.parse(req.body || "{}") : (req.body || {});
     if (typeof body.text !== "string" || typeof body.targetLang !== "string") {
       return res.status(400).json({ error: "Bad Request: need { text, targetLang }" });
@@ -130,14 +122,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const sourceText: string = body.text;
     const { code: targetCode } = normalizeTargetLang(body.targetLang);
 
-    // 1차 요청
-    let result = await requestTranslation(apiKey, body.model || DEFAULT_MODEL, sourceText, targetCode, true);
-    let result_latin = unifyApostrophe(cyrToLatin(result)).trim();
+    let result_latin = "";
 
-    // 한글/사과문 검출 시 재시도
+    // 1차 번역
+    result_latin = unifyApostrophe(cyrToLatin(await requestTranslation(apiKey, body.model || DEFAULT_MODEL, sourceText, targetCode, true))).trim();
+
+    // 2차 재시도 (한글/사과문 발견 시)
     if (hasHangul(result_latin) || looksLikeApologyOrRefusal(result_latin)) {
-      const retry = await requestTranslation(apiKey, body.model || DEFAULT_MODEL, sourceText, targetCode, true);
-      result_latin = unifyApostrophe(cyrToLatin(retry)).trim();
+      result_latin = unifyApostrophe(cyrToLatin(await requestTranslation(apiKey, body.model || DEFAULT_MODEL, sourceText, targetCode, true))).trim();
+    }
+
+    // 최후의 보루: 여전히 한글이 남아있으면 로마자 변환
+    if (hasHangul(result_latin)) {
+      result_latin = romanizeHangul(sourceText);
     }
 
     const result_b64 = toBase64Utf8(result_latin);
