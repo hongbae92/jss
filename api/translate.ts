@@ -12,44 +12,16 @@ function setCors(res: VercelResponse) {
 function unifyApostrophe(s: string) {
   return s?.replace(/[\u2018\u2019\u02BC\u02BB]/g, "'");
 }
-function cyrToLatin(input: string) {
-  if (!input) return input;
-  return input
-    .replace(/Ч/g, "Ch").replace(/ч/g, "ch")
-    .replace(/Ш/g, "Sh").replace(/ш/g, "sh")
-    .replace(/Ю/g, "Yu").replace(/ю/g, "yu")
-    .replace(/Я/g, "Ya").replace(/я/g, "ya")
-    .replace(/Ё/g, "Yo").replace(/ё/g, "yo");
-}
 function toBase64Utf8(s: string) {
   return Buffer.from(s ?? "", "utf8").toString("base64");
 }
-function hasHangul(s: string) {
-  return /[\u3131-\uD7A3]/.test(s);
-}
-function isBadOutput(s: string) {
-  const t = s.trim().toLowerCase();
-  return (
-    hasHangul(t) ||
-    t.includes("???") ||
-    t.startsWith("sorry") ||
-    t.startsWith("uzr") ||
-    t.startsWith("kechirasiz")
-  );
-}
 
-/** === 요청 === */
-async function requestTranslation(apiKey: string, model: string, sourceText: string, targetCode: string) {
+/** === OpenAI 요청 === */
+async function requestTranslation(apiKey: string, model: string, sourceText: string) {
   const systemPrompt = `
 You are a professional translator.
-Your ONLY task is to translate Korean text into Uzbek (Latin, ${targetCode}).
-
-RULES:
-- Output ONLY the Uzbek Latin translation.
-- NO Korean (Hangul forbidden).
-- NO apologies. NO placeholders like ???.
-- NO paraphrasing. Translate literally and faithfully.
-- Preserve line breaks, punctuation, and symbols (~~ etc).
+Translate the following Korean text into Uzbek (Latin, uz-Latn).
+Output ONLY the Uzbek Latin translation. Nothing else.
 `.trim();
 
   const payload = {
@@ -86,6 +58,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   if (req.method !== "POST") return res.status(405).json({ error: "Method Not Allowed" });
 
   try {
+    // 토큰 검사
     const expectedToken = process.env.CLIENT_TOKEN;
     if (expectedToken) {
       const auth = String(req.headers["authorization"] || "");
@@ -104,23 +77,14 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const sourceText: string = body.text;
-    const targetCode = "uz-Latn";
 
-    // 1차 번역
-    let result_latin = unifyApostrophe(cyrToLatin(await requestTranslation(apiKey, body.model || DEFAULT_MODEL, sourceText, targetCode))).trim();
+    // 번역 요청
+    let result_latin = await requestTranslation(apiKey, body.model || DEFAULT_MODEL, sourceText);
+    result_latin = unifyApostrophe(result_latin).trim();
 
-    // 검증 실패 시 재시도
-    if (isBadOutput(result_latin)) {
-      const retry = await requestTranslation(apiKey, body.model || DEFAULT_MODEL, sourceText, targetCode);
-      result_latin = unifyApostrophe(cyrToLatin(retry)).trim();
-    }
-
-    // 최후의 보루: 그래도 나쁘면 그냥 "Translation failed" 넣기 (빈칸 방지)
-    if (isBadOutput(result_latin) || !result_latin) {
-      result_latin = "Tarjima muvaffaqiyatsiz bajarildi (fallback).";
-    }
-
+    // Base64로 반환 (출력 깨짐 방지)
     const result_b64 = toBase64Utf8(result_latin);
+
     return res.status(200).json({ ok: true, mode: "translate", result_b64 });
   } catch (err: any) {
     return res.status(500).json({ ok: false, error: String(err?.message || err) });
